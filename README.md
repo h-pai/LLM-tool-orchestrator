@@ -1,4 +1,4 @@
-# Assistant Framework
+# LLM Tool Orchestrator
 
 A lightweight, developer-friendly framework for building **custom AI chatbots** using assistants and tools.  
 Inspired in part by the UI structure from [chatbot-ui-lite](https://github.com/mckaywrigley/chatbot-ui-lite).
@@ -58,6 +58,32 @@ This makes your chatbot:
 │ └── chat.ts # API endpoint handling model planning and tool execution
 
 ---
+
+## Example: Date Assistant
+
+The Date Assistant is a simple demonstration assistant included in this framework.
+
+### User asks:
+> What day will it be 2 days later?
+
+### Step 1 — The model generates a plan:
+```json
+[
+  { "tool": "getCurrentDate", "args": { "offset": 2 } },
+  { "tool": "getDayOfWeek", "args": { "date": "{{prev:0.date}}" } }
+]
+```
+### Step 2 — The backend executes:
+
+getCurrentDate(offset=2) → "2025-02-14"
+
+getDayOfWeek(date="2025-02-14") → "Friday"
+### Final response to the user:
+```mathametica
+Friday
+```
+
+
 
 ## 🚀 Usage
 
