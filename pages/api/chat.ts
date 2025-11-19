@@ -1,325 +1,227 @@
+/**
+ * This module defines an API route handler for interacting with an Azure OpenAI model
+ * to dynamically generate and execute a sequence of tool calls based on user input.
+ *
+ * The model receives a system prompt describing available tools, produces a JSON-based
+ * "plan" outlining which tools to invoke and in what order, and the server executes
+ * them sequentially using a defined assistant object.
+ *
+ * Key features:
+ * - Dynamically constructs a plan of tool invocations from a user query.
+ * - Substitutes placeholders in arguments referencing previous tool outputs.
+ * - Sequentially executes each step and returns the final result to the client.
+ */
+
 import type { NextApiRequest, NextApiResponse } from "next";
-import { assistants } from "@/lib/assistants";
-import { BaseAssistant } from "@/lib/assistants/baseAssistant";
-import { selectAssistantFromModel } from "@/lib/ai/selectAssistant";
+import { dateAssistant } from "@/lib/assistants/dateAssistant";
 
-// ---------------- Helper Functions ----------------
-
-function stringifyToolResult(res: unknown): string {
-  if (res === null || res === undefined) return "";
-  if (typeof res === "string") return res;
-  if (typeof res === "number" || typeof res === "boolean") return String(res);
-  if (Array.isArray(res)) return res.map(stringifyToolResult).join(", ");
-
-  try {
-    const obj = res as Record<string, unknown>;
-    if ("day" in obj) return String((obj as any).day);
-    if ("date" in obj) return String((obj as any).date);
-
-    if ("meetings" in obj) {
-      const meetings = (obj as any).meetings;
-      if (Array.isArray(meetings)) {
-        return (
-          "Meetings:\n" +
-          meetings.map((m: any, i: number) => `${i + 1}. ${m.name} (id: ${m.id})`).join("\n")
-        );
-      }
-    }
-
-    return JSON.stringify(obj);
-  } catch {
-    return String(res);
-  }
-}
-
+/**
+ * Extracts a JSON array from model output content.
+ * Handles direct, double-encoded, or embedded JSON within text.
+ *
+ * @param content - The raw text content from the model's response.
+ * @returns A parsed JSON array if successfully extracted, or null otherwise.
+ */
 function extractJsonArray(content: string): any[] | null {
   try {
     const parsed = JSON.parse(content);
     if (Array.isArray(parsed)) return parsed;
-  } catch { }
 
+    // Handles cases where JSON content is stringified twice.
+    if (typeof parsed === "string" && parsed.trim().startsWith("[")) {
+      const nested = JSON.parse(parsed);
+      if (Array.isArray(nested)) return nested;
+    }
+  } catch {}
+
+  // Attempt to find a JSON array embedded within text.
   const match = content.match(/\[[\s\S]*\]/);
   if (match) {
     try {
       const parsed = JSON.parse(match[0]);
       if (Array.isArray(parsed)) return parsed;
-    } catch { }
+    } catch {}
   }
   return null;
 }
 
+/**
+ * Converts a tool's result into a human-readable string.
+ * Handles various data types including primitives, arrays, and objects.
+ *
+ * @param res - The tool result to format.
+ * @returns A readable string representation of the result.
+ */
+function stringifyToolResult(res: any): string {
+  if (!res) return "";
+  if (typeof res === "string") return res;
+  if (typeof res === "number" || typeof res === "boolean") return String(res);
+  if (Array.isArray(res)) return res.map(stringifyToolResult).join(", ");
+
+  if (typeof res === "object") {
+    if ("day" in res) return `Day: ${res.day}`;
+    if ("date" in res) return `Date: ${res.date}`;
+  }
+
+  return JSON.stringify(res, null, 2);
+}
+
+/**
+ * Substitutes placeholders of the form {{prev:index.field}} with
+ * actual values from previously executed tool results.
+ *
+ * @param value - The value that may contain substitution placeholders.
+ * @param results - The list of previously executed tool results.
+ * @returns The same structure with substitutions applied.
+ */
 function substituteTemplates(value: any, results: any[]): any {
-  // Handle string substitution templates like {{prev:0.field.subfield}}
   if (typeof value === "string") {
-    const regex = /{{\s*prev:(\d+)\.([\s\S]+?)\s*}}/; // matches {{prev:0.something}}
+    const regex = /{{\s*prev:(\d+)\.([\s\S]+?)\s*}}/;
     const match = value.match(regex);
     if (match) {
       const index = parseInt(match[1], 10);
       const path = match[2];
       const prev = results[index];
-      if (prev === undefined) return undefined;
+      if (!prev) return undefined;
 
-      // Resolve nested fields and array indices dynamically
       try {
-        const resolved = path.split(".").reduce((acc: any, key) => {
-          const arrayMatch = key.match(/(\w+)\[(\d+)\]/);
-          if (arrayMatch) {
-            const [, prop, idx] = arrayMatch;
-            return acc && acc[prop] ? acc[prop][parseInt(idx, 10)] : undefined;
-          }
-          return acc ? acc[key] : undefined;
-        }, prev);
-
-        return resolved;
+        return path.split(".").reduce((acc: any, key) => acc?.[key], prev);
       } catch {
         return undefined;
       }
     }
-
-    // No match → return as-is
     return value;
   }
 
-  // Handle arrays
-  if (Array.isArray(value)) {
-    return value.map((v) => substituteTemplates(v, results));
-  }
-
-  // Handle objects recursively
+  if (Array.isArray(value)) return value.map((v) => substituteTemplates(v, results));
   if (value && typeof value === "object") {
     const out: Record<string, any> = {};
-    for (const key of Object.keys(value)) {
-      out[key] = substituteTemplates(value[key], results);
-    }
+    for (const k of Object.keys(value)) out[k] = substituteTemplates(value[k], results);
     return out;
   }
-  if (typeof value === "string" && value.includes("prev:")) {
-    console.log("🧩 Substituting template:", value);
-  }
-  // Primitive fallback
   return value;
 }
 
-
-// 🧩 NEW — sanitize arguments before sending to any tool
-function sanitizeArgs(toolDef: any, rawArgs: Record<string, any> = {}) {
-  try {
-    const allowed =
-      toolDef?.function?.parameters?.properties
-        ? Object.keys(toolDef.function.parameters.properties)
-        : [];
-    const clean: Record<string, any> = {};
-    for (const key of allowed) {
-      if (key in rawArgs) clean[key] = rawArgs[key];
-    }
-    return clean;
-  } catch {
-    return rawArgs;
-  }
-}
-
-type PlanStep = { tool: string; args?: Record<string, any> };
-type Plan = PlanStep[];
-
-// ---------------- Planner ----------------
-
-async function requestPlanFromModel(messages: any[], assistant: BaseAssistant) {
+/**
+ * Sends a request to Azure OpenAI to generate a plan (list of tool calls)
+ * based on the given conversation messages.
+ *
+ * The function dynamically constructs the system prompt using available
+ * tools defined in the assistant and enforces JSON-only responses.
+ *
+ * @param messages - The chat messages provided by the user and context.
+ * @returns A parsed array of tool invocation steps, or null if parsing fails.
+ */
+async function requestPlanFromModel(messages: any[]) {
   const baseUrl = process.env.OPENAI_API_BASE_URL!;
   const apiKey = process.env.OPENAI_API_KEY!;
   const deployment = process.env.OPENAI_DEPLOYMENT_NAME!;
   const apiVersion = process.env.OPENAI_API_VERSION!;
 
+  const assistant = dateAssistant;
+
+  // Construct system prompt detailing tool definitions and rules.
   const systemPrompt = `
-You are a planning engine that creates a structured list of tool calls needed to fulfill the user's request.
+You are a planner. Based on the user's request, return a JSON array of tool calls needed to fulfill the request.
+Each step must be: { "tool": "<toolName>", "args": { ... } }.
 
-Your job is to produce a JSON array of steps. Each step must be an object:
-{ "tool": "<toolName>", "args": { ... } }
-
-Each assistant provides you with a list of available tools.
-
-Available tools and their schemas:
+Available tools and schemas:
 ${assistant.getToolDefinitions()
-      .map(
-        (d: any) =>
-          `Tool name: ${d.function.name}\nDescription: ${d.function.description}\nParameters: ${JSON.stringify(
-            d.function.parameters,
-            null,
-            2
-          )}`
-      )
-      .join("\n\n")}
+  .map(
+    (d: any) =>
+      `Tool name: ${d.function.name}\nDescription: ${d.function.description}\nParameters: ${JSON.stringify(
+        d.function.parameters,
+        null,
+        2
+      )}`
+  )
+  .join("\n\n")}
 
-
-Your plan must be **pure JSON** — no prose, comments, or explanations.
-
----
-
-### 🧭 General Rules
-
-1. Use tools **only as needed** to satisfy the user's intent.
-   - If a single tool can fulfill the query, use just that one.
-   - If one tool’s output is required by another (e.g., ID lookup → detail fetch), chain them in order.
-
-2. When referencing data from a previous tool’s output, always use this template syntax:
-   **"{{prev:<stepIndex>.<fieldPath>}}"**
-   Example: 
-   \`\`\`json
-   {"tool": "fetchMeetingDetails", "args": {"meetingId": "{{prev:0.meetings[0].meetingId}}"}}
-   \`\`\`
-   - Never use tool names like \`{{fetchMeetings.meetings[0].id}}\`.
-   - Always refer to previous results by their numeric index.
-
-3. If you must call a lookup or helper tool (like fetching a list to find an ID),
-   treat that tool as an **internal step**. 
-   The final tool in your plan should always produce the user's final visible answer.
-
-4. Use only the parameters defined in each tool’s schema.
-   - Never invent or add keys not listed (like "date", "name", "meeting", etc.).
-   - If you don’t have a required parameter yet, first call a tool that can provide it.
-
-5. If the user’s request cannot be completed with available tools, return:
-   \`\`\`json
-   [{"tool":"TOOL_NOT_AVAILABLE"}]
-   \`\`\`
-
-6. Always ensure your output is **valid JSON** — no markdown, no extra text.
-
----
-
-### 🧠 Examples
-
-**Example 1 – Simple direct call**
-User: "What’s today’s date?"
-Plan:
-\`\`\`json
-[{"tool":"getCurrentDate","args":{}}]
-\`\`\`
-
-**Example 2 – Dependent tool chain**
-User: "Show me details for 2025-05-28 Project Review"
-Plan:
-\`\`\`json
-[
-  {"tool": "fetchMeetings", "args": {}},
-  {"tool": "fetchMeetingDetails", "args": {"meetingId": "{{prev:0.meetings[0].meetingId}}"}}
-]
-\`\`\`
-
----
-
-Your response must contain only the JSON plan, nothing else.
+Rules:
+1. Use the minimum number of tools to answer the user's question.
+2. If you need a shifted date (e.g., "2 days later"), use getCurrentDate with { "offset": 2 }.
+3. If the user wants the weekday, use getDayOfWeek after getting the date.
+4. When referencing previous tool results, use the format {{prev:<index>.<field>}}.
+5. Return only valid JSON, no extra text or comments.
 `;
 
   const body = {
     messages: [{ role: "system", content: systemPrompt }, ...messages],
-    temperature: 0.0,
-    max_tokens: 400,
+    temperature: 0,
+    max_tokens: 300,
   };
 
+  // Send request to Azure OpenAI API.
   const resp = await fetch(
     `${baseUrl}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`,
     {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify(body),
     }
   );
-
-  if (!resp.ok) {
-    const txt = await resp.text();
-    console.error("Planner model error:", txt);
-    return { error: `Planner model error: ${resp.status}` };
-  }
 
   const data = await resp.json();
   const content = data.choices?.[0]?.message?.content;
   if (!content) return null;
 
   const parsed = extractJsonArray(content);
-  if (!parsed) return { error: "Failed to parse plan JSON from model." };
-  return parsed as Plan;
+  return parsed || null;
 }
 
-// ---------------- Main Handler ----------------
-
+/**
+ * Main API handler.
+ * 
+ * This route accepts a POST request containing chat messages, requests
+ * a tool invocation plan from Azure OpenAI, executes each tool step
+ * sequentially, and returns the final result as a human-readable message.
+ *
+ * @param req - The incoming API request (expects { messages } in body).
+ * @param res - The outgoing API response.
+ */
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
     const { messages } = req.body;
-    const userMsg = messages[messages.length - 1]?.content || "";
+    const assistant = dateAssistant;
 
-    // 🧠 Ask the model to select the correct assistant dynamically
-    const routerDecision = await selectAssistantFromModel(userMsg);
-    const assistant =
-      assistants[routerDecision.assistantName as keyof typeof assistants] ||
-      assistants.dateAssistant;
-
-    console.log(
-      `🤖 Router selected: ${routerDecision.assistantName} → ${routerDecision.reason || "no reason provided"}`
-    );
-
-    // 🧩 Generate the plan from the selected assistant
-    const planOrErr = await requestPlanFromModel(messages, assistant);
-    if (!planOrErr) {
+    // Step 1: Request a tool execution plan from the model.
+    const plan = await requestPlanFromModel(messages);
+    if (!plan) {
       res.status(200).json({
-        choices: [
-          { message: { role: "assistant", content: "Sorry, I couldn't create a plan for that request." } },
-        ],
+        choices: [{ message: { role: "assistant", content: "Sorry, I couldn't create a plan." } }],
       });
       return;
     }
 
-    if ("error" in planOrErr) {
-      res.status(200).json({
-        choices: [{ message: { role: "assistant", content: planOrErr.error } }],
-      });
-      return;
-    }
+    console.log("Executing plan:", JSON.stringify(plan, null, 2));
 
-    const plan = planOrErr as Plan;
-    console.log("🧠 Executing plan:", JSON.stringify(plan, null, 2));
+    // Step 2: Execute each tool sequentially.
     const results: any[] = [];
-
-    // 🔧 Execute each step in the plan sequentially
-    for (const step of plan) {
-      const toolName = step.tool.replace(/^functions\./, "");
-      if (toolName === "TOOL_NOT_AVAILABLE") {
-        res.status(200).json({
-          choices: [
-            { message: { role: "assistant", content: "Sorry, no suitable tool is available for that request." } },
-          ],
-        });
-        return;
-      }
-
+    for (const [i, step] of plan.entries()) {
+      const toolName = step.tool;
       const toolEntry = assistant.tools[toolName];
-      console.log('toolname: ' + JSON.stringify(toolEntry))
+
       if (!toolEntry) {
         res.status(200).json({
-          choices: [
-            { message: { role: "assistant", content: `Tool "${step.tool}" not found for this assistant.` } },
-          ],
+          choices: [{ message: { role: "assistant", content: `Tool ${toolName} not found.` } }],
         });
         return;
       }
 
-      // 🧠 Substitute templates and sanitize arguments
-      let args = step.args ? substituteTemplates(step.args, results) : {};
-      args = sanitizeArgs(toolEntry.definition, args); // ✅ new line: removes invalid params
-
-      const toolResult = await toolEntry.handler(args);
-      results.push(toolResult);
-      console.log("🔍 Results so far:", JSON.stringify(results, null, 2));
+      // Substitute dynamic references from prior tool outputs.
+      const args = step.args ? substituteTemplates(step.args, results) : {};
+      const result = await toolEntry.handler(args);
+      results.push(result);
+      console.log(`Step ${i}:`, result);
     }
 
-    // 🏁 Return final result
-    const last = results[results.length - 1];
-    const out = stringifyToolResult(last);
-    res.status(200).json({ choices: [{ message: { role: "assistant", content: out } }] });
+    // Step 3: Return the final tool output as formatted text.
+    const finalResult = results[results.length - 1];
+    res.status(200).json({
+      choices: [{ message: { role: "assistant", content: stringifyToolResult(finalResult) } }],
+    });
   } catch (err) {
     console.error("Chat handler error:", err);
-    res.status(500).send("Server error");
+    res.status(500).json({ error: "Server error" });
   }
 }

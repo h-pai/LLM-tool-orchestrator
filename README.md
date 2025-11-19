@@ -1,71 +1,86 @@
-# Chatbot UI Lite
+# 🧭 Date Assistant
 
-A simple chatbot starter kit for OpenAI's chat model using Next.js, TypeScript, and Tailwind CSS.
+A lightweight example of a **tool-based AI assistant framework** that plans and executes tool calls based on user input.  
+Built using components inspired by [chatbot-ui-lite](https://github.com/mckaywrigley/chatbot-ui-lite).
 
-See a [demo](https://twitter.com/mckaywrigley/status/1634549098954248193?s=46&t=AowqkodyK6B4JccSOxSPew).
+---
 
-For an advanced version, see [Chatbot UI](https://github.com/mckaywrigley/chatbot-ui).
+## 📘 Overview
 
-![Chatbot UI Lite](./public/screenshot.png)
+The **Date Assistant** interprets natural language queries like:
+> “What day will it be 3 days from now?”  
+> “What day was it 2 days ago?”
 
-## Features
+It can:
+- Get today’s or a shifted date.
+- Find the weekday for a given date.
 
-Chatbot UI Lite provides a simple, fully-functional chat interface that you can use to start building your own chatbot apps powered by OpenAI.
+If the query isn’t related to dates, it returns `TOOL_NOT_AVAILABLE`.
 
-It has everything you need to hit the ground running.
+---
 
-Modify the chat interface in `components/Chat`.
+## ⚙️ Project Structure
 
-Tweak the system prompt in `utils/index.ts`.
+/src
+├── lib/
+│ ├── assistants/
+│ │ ├── baseAssistant.ts # Generic assistant class
+│ │ └── dateAssistant.ts # Assistant specialized for date queries
+│ └── tools/
+│ ├── getCurrentDate.ts # Returns today’s or offset date
+│ └── getDayOfWeek.ts # Returns weekday for a given date
+├── pages/
+│ └── api/
+│ └── chat.ts # API endpoint handling model planning and tool execution
 
-Tweak the assistant prompt in `pages/index.tsx`.
+---
 
-## Deploy
+## 🚀 Usage
 
-**Vercel**
+1. **Install dependencies**
+    ```bash
+    npm install
+    ```
 
-Host your own live version of Chatbot UI Lite with Vercel.
+2. **Add environment variables**
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fmckaywrigley%2Fchatbot-ui-lite&env=OPENAI_API_KEY&envDescription=OpenAI%20API%20Key%20needed%20for%20chat.&envLink=https%3A%2F%2Fopenai.com%2Fproduct&project-name=chatbot-ui-lite&repository-name=chatbot-ui-lite)
+     You can connect this to any compatible AI model endpoint.
 
-**Replit**
+     Create a .env.local file:
+    
+    ```env
+    OPENAI_API_KEY=your-api-key
+    OPENAI_API_BASE_URL=https://your-model-endpoint
+    OPENAI_DEPLOYMENT_NAME=model-name
+    OPENAI_API_VERSION=latest
+    ```
+    
 
-Fork Chatbot UI on Replit [here](https://replit.com/@MckayWrigley/chatbot-ui).
+3. **Run locally**
 
-## Running Locally
+    ```bash
+    npm run dev
+    
+4. **Test the API**
 
-**1. Clone Repo**
+    ```bash
+    curl -X POST http://localhost:3000/ \
+    -H "Content-Type: application/json" \
+    -d '{"messages": [{"role": "user", "content": "What day will it be 2 days later?"}]}'
+    ```
 
-```bash
-git clone https://github.com/mckaywrigley/chatbot-ui-lite.git
+## 🧩 Extend It
+
+Create new assistants by:
+- Defining tools in /lib/tools
+- Creating a new assistant using BaseAssistant
+- Connecting it through /api/chat
+
+Each tool should define:
+    
+```ts
+export const sampleTool = {
+    definition: { name, description, parameters },
+    handler: async (args) => { ... }
+};
 ```
-
-**2. Install Dependencies**
-
-```bash
-npm i
-```
-
-**3. Provide OpenAI API Key**
-
-Create a .env.local file in the root of the repo with your OpenAI API Key:
-
-```bash
-OPENAI_API_KEY=<YOUR_KEY>
-```
-
-**4. Run App**
-
-```bash
-npm run dev
-```
-
-**5. Start Building**
-
-You should be able to start chatting with the bot.
-
-Now, go build the app into whatever kind of chatbot you want!
-
-## Contact
-
-If you have any questions, feel free to reach out to me on [Twitter](https://twitter.com/mckaywrigley).
