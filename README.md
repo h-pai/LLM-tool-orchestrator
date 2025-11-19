@@ -1,6 +1,8 @@
 # 🧭 Date Assistant
 
-A lightweight example of a **tool-based AI assistant framework** that plans and executes tool calls based on user input.  
+A minimal but powerful example of building a tool-based AI assistant — where the LLM is responsible only for planning, not execution.
+The assistant converts user input into a clear list of tool calls (with arguments), and the backend executes them safely.
+This pattern makes assistants predictable, debuggable, and modular, enabling developers to add new tools without retraining or restructuring the model.
 Built using components inspired by [chatbot-ui-lite](https://github.com/mckaywrigley/chatbot-ui-lite).
 
 ---
