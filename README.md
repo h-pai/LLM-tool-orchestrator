@@ -1,23 +1,45 @@
-# 🧭 Date Assistant
+# Assistant Framework
 
-A minimal but powerful example of building a tool-based AI assistant — where the LLM is responsible only for planning, not execution.
-The assistant converts user input into a clear list of tool calls (with arguments), and the backend executes them safely.
-This pattern makes assistants predictable, debuggable, and modular, enabling developers to add new tools without retraining or restructuring the model.
-Built using components inspired by [chatbot-ui-lite](https://github.com/mckaywrigley/chatbot-ui-lite).
+A lightweight, developer-friendly framework for building **custom AI chatbots** using assistants and tools.  
+Inspired in part by the UI structure from [chatbot-ui-lite](https://github.com/mckaywrigley/chatbot-ui-lite).
+
+This framework helps developers quickly create chatbots that can do real tasks — by planning and executing tool calls instead of relying on one big prompt.
 
 ---
 
-## 📘 Overview
+## Why this exists
 
-The **Date Assistant** interprets natural language queries like:
-> “What day will it be 3 days from now?”  
-> “What day was it 2 days ago?”
+Most chatbot implementations become difficult to manage because:
 
-It can:
-- Get today’s or a shifted date.
-- Find the weekday for a given date.
+- Everything is packed into one long prompt  
+- There is no clean way for the chatbot to call actual functions  
+- Each new feature requires rewriting the bot  
+- Developers can't easily have multiple assistants for different use cases  
 
-If the query isn’t related to dates, it returns `TOOL_NOT_AVAILABLE`.
+This framework solves that by giving you:
+
+- A **BaseAssistant** class (core logic)
+- A simple **tool system** (your functions)
+- The ability to create **multiple assistants** based on your use cases  
+- A clear separation between *AI planning* and *backend execution*
+
+It works with **any LLM provider** that supports chat completions.
+
+---
+
+## How it works
+
+1. You define **tools** → actual functions the chatbot can call.  
+2. You define an **assistant** → a unit with its own system prompt + tools.  
+3. The model only returns a **JSON plan** of tool calls.  
+4. Your backend executes the plan step-by-step.  
+5. The final result is returned to the user.
+
+This makes your chatbot:
+- Predictable  
+- Modular  
+- Easy to extend  
+- Safe (LLM doesn't execute code — *you* do)
 
 ---
 
